@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { Wifi, WifiOff, Loader2 } from 'lucide-react';
+import { Switch } from '@/components/ui/switch';
+import { Wifi, WifiOff, Loader2, Bell, BellOff } from 'lucide-react';
 
 import { TIMEFRAMES, TimeframeValue } from './types/crypto';
 import { useBollingerRadar } from './hooks/useBollingerRadar';
@@ -11,10 +12,62 @@ import { SignalDisplay } from './components/SignalDisplay';
 import { PriceChart } from './components/PriceChart';
 
 export default function App() {
-  const [symbol, setSymbol] = useState('LINKUSDT');
-  const [timeframe, setTimeframe] = useState<TimeframeValue>('4h');
+  // Load settings from localStorage or use defaults
+  const [symbol, setSymbol] = useState(() =>
+    localStorage.getItem('bb-symbol') || 'LINKUSDT'
+  );
+  const [timeframe, setTimeframe] = useState<TimeframeValue>(() =>
+    (localStorage.getItem('bb-timeframe') as TimeframeValue) || '4h'
+  );
+  const [bbPeriod, setBbPeriod] = useState(() =>
+    Number(localStorage.getItem('bb-period')) || 20
+  );
+  const [bbMultiplier, setBbMultiplier] = useState(() =>
+    Number(localStorage.getItem('bb-multiplier')) || 2
+  );
+  const [alertsEnabled, setAlertsEnabled] = useState(() =>
+    localStorage.getItem('bb-alerts-enabled') === 'true'
+  );
+  const [buyAlertThreshold, setBuyAlertThreshold] = useState(() =>
+    Number(localStorage.getItem('bb-buy-threshold')) || 80
+  );
+  const [sellAlertThreshold, setSellAlertThreshold] = useState(() =>
+    Number(localStorage.getItem('bb-sell-threshold')) || 80
+  );
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
   const [, forceUpdate] = useState({});
-  
+
+  const lastAlertRef = useRef<{ type: string; time: number } | null>(null);
+
+  // Save settings to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem('bb-symbol', symbol);
+  }, [symbol]);
+
+  useEffect(() => {
+    localStorage.setItem('bb-timeframe', timeframe);
+  }, [timeframe]);
+
+  useEffect(() => {
+    localStorage.setItem('bb-period', String(bbPeriod));
+  }, [bbPeriod]);
+
+  useEffect(() => {
+    localStorage.setItem('bb-multiplier', String(bbMultiplier));
+  }, [bbMultiplier]);
+
+  useEffect(() => {
+    localStorage.setItem('bb-alerts-enabled', String(alertsEnabled));
+  }, [alertsEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem('bb-buy-threshold', String(buyAlertThreshold));
+  }, [buyAlertThreshold]);
+
+  useEffect(() => {
+    localStorage.setItem('bb-sell-threshold', String(sellAlertThreshold));
+  }, [sellAlertThreshold]);
+
   const {
     marketData,
     currentPrice,
@@ -23,7 +76,58 @@ export default function App() {
     error,
     connectionStatus,
     lastUpdate
-  } = useBollingerRadar({ symbol, timeframe });
+  } = useBollingerRadar({ symbol, timeframe, bbPeriod, bbMultiplier });
+
+  // Request notification permission
+  useEffect(() => {
+    if ('Notification' in window) {
+      setNotificationPermission(Notification.permission);
+    }
+  }, []);
+
+  // Handle alert toggle
+  const handleAlertsToggle = async (enabled: boolean) => {
+    if (enabled && Notification.permission === 'default') {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+      if (permission === 'granted') {
+        setAlertsEnabled(true);
+      }
+    } else if (enabled && Notification.permission === 'granted') {
+      setAlertsEnabled(true);
+    } else {
+      setAlertsEnabled(enabled);
+    }
+  };
+
+  // Alert system - check for threshold crossings
+  useEffect(() => {
+    if (!alertsEnabled || Notification.permission !== 'granted') return;
+
+    const now = Date.now();
+    const cooldownMs = 60000; // 1 minute cooldown between alerts
+
+    // Check if we should alert
+    if (signal.signalType === 'BUY' && signal.percentage >= buyAlertThreshold) {
+      if (!lastAlertRef.current || lastAlertRef.current.type !== 'BUY' || now - lastAlertRef.current.time > cooldownMs) {
+        new Notification(`🟢 BUY Signal - ${symbol}`, {
+          body: `${signal.signal} signal detected at $${currentPrice.toFixed(4)}`,
+          icon: '/favicon.ico',
+          tag: 'bollinger-alert'
+        });
+        lastAlertRef.current = { type: 'BUY', time: now };
+      }
+    } else if (signal.signalType === 'SELL' && signal.percentage >= sellAlertThreshold) {
+      if (!lastAlertRef.current || lastAlertRef.current.type !== 'SELL' || now - lastAlertRef.current.time > cooldownMs) {
+        new Notification(`🔴 SELL Signal - ${symbol}`, {
+          body: `${signal.signal} signal detected at $${currentPrice.toFixed(4)}`,
+          icon: '/favicon.ico',
+          tag: 'bollinger-alert'
+        });
+        lastAlertRef.current = { type: 'SELL', time: now };
+      }
+    }
+  }, [signal, alertsEnabled, buyAlertThreshold, sellAlertThreshold, symbol, currentPrice]);
 
   // Force re-render every second to update the time display
   useEffect(() => {
@@ -124,10 +228,10 @@ export default function App() {
                   Enter any Binance trading pair (e.g., BTCUSDT, ETHUSDT)
                 </p>
               </div>
-              
+
               <div className="space-y-2">
                 <label className="text-sm font-medium">Timeframe</label>
-                
+
                 {/* Quick Select Buttons */}
                 <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
                   {TIMEFRAMES.map((tf) => (
@@ -144,11 +248,119 @@ export default function App() {
                     </button>
                   ))}
                 </div>
-                
+
                 <p className="text-xs text-muted-foreground">
                   Higher timeframes provide more reliable signals but slower updates
                 </p>
               </div>
+            </div>
+
+            {/* Bollinger Band Settings */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 pt-4 border-t border-border/50">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">BB Period (SMA)</label>
+                <div className="flex items-center gap-3">
+                  <Input
+                    type="number"
+                    min="5"
+                    max="200"
+                    value={bbPeriod}
+                    onChange={(e) => setBbPeriod(Number(e.target.value))}
+                    className="font-mono"
+                  />
+                  <span className="text-sm text-muted-foreground whitespace-nowrap">candles</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Typical: 20. Higher = smoother but slower signals
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium">BB Multiplier (σ)</label>
+                <div className="flex items-center gap-3">
+                  <Input
+                    type="number"
+                    min="0.5"
+                    max="5"
+                    step="0.1"
+                    value={bbMultiplier}
+                    onChange={(e) => setBbMultiplier(Number(e.target.value))}
+                    className="font-mono"
+                  />
+                  <span className="text-sm text-muted-foreground whitespace-nowrap">× std dev</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Typical: 2. Higher = wider bands, fewer signals
+                </p>
+              </div>
+            </div>
+
+            {/* Alert Settings */}
+            <div className="mt-4 pt-4 border-t border-border/50 space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <label className="text-sm font-medium flex items-center gap-2">
+                    {alertsEnabled ? <Bell className="w-4 h-4 text-primary" /> : <BellOff className="w-4 h-4" />}
+                    Signal Alerts
+                  </label>
+                  <p className="text-xs text-muted-foreground">
+                    Get browser notifications when signal thresholds are crossed
+                  </p>
+                </div>
+                <Switch
+                  checked={alertsEnabled}
+                  onCheckedChange={handleAlertsToggle}
+                />
+              </div>
+
+              {alertsEnabled && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pl-6">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-green-400">BUY Alert Threshold</label>
+                    <div className="flex items-center gap-3">
+                      <Input
+                        type="number"
+                        min="1"
+                        max="100"
+                        value={buyAlertThreshold}
+                        onChange={(e) => setBuyAlertThreshold(Number(e.target.value))}
+                        className="font-mono"
+                        disabled={!alertsEnabled}
+                      />
+                      <span className="text-sm text-muted-foreground whitespace-nowrap">% strength</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Alert when BUY signal reaches this strength
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-red-400">SELL Alert Threshold</label>
+                    <div className="flex items-center gap-3">
+                      <Input
+                        type="number"
+                        min="1"
+                        max="100"
+                        value={sellAlertThreshold}
+                        onChange={(e) => setSellAlertThreshold(Number(e.target.value))}
+                        className="font-mono"
+                        disabled={!alertsEnabled}
+                      />
+                      <span className="text-sm text-muted-foreground whitespace-nowrap">% strength</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Alert when SELL signal reaches this strength
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {alertsEnabled && notificationPermission === 'denied' && (
+                <div className="flex items-center gap-2 text-xs text-destructive pl-6">
+                  <BellOff className="w-3 h-3" />
+                  <span>Notifications blocked. Please enable in browser settings.</span>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -198,12 +410,12 @@ export default function App() {
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm font-medium text-muted-foreground">
-                  Price Chart (Last 50 periods)
+                  Price & Volume Chart (Last 50 periods)
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 {isLoading ? (
-                  <div className="h-64 flex items-center justify-center">
+                  <div className="h-96 flex items-center justify-center">
                     <Loader2 className="w-6 h-6 animate-spin text-primary" />
                   </div>
                 ) : (

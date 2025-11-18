@@ -6,6 +6,8 @@ import { calculateBollingerBands, calculateSignal } from '../utils/bollinger';
 interface UseBollingerRadarOptions {
   symbol: string;
   timeframe: TimeframeValue;
+  bbPeriod?: number;
+  bbMultiplier?: number;
 }
 
 interface UseBollingerRadarReturn {
@@ -18,7 +20,12 @@ interface UseBollingerRadarReturn {
   lastUpdate: number;
 }
 
-export function useBollingerRadar({ symbol, timeframe }: UseBollingerRadarOptions): UseBollingerRadarReturn {
+export function useBollingerRadar({
+  symbol,
+  timeframe,
+  bbPeriod = 20,
+  bbMultiplier = 2
+}: UseBollingerRadarOptions): UseBollingerRadarReturn {
   const [marketData, setMarketData] = useState<MarketData[]>([]);
   const [currentPrice, setCurrentPrice] = useState<number>(0);
   const [signal, setSignal] = useState<SignalData>({
@@ -38,8 +45,8 @@ export function useBollingerRadar({ symbol, timeframe }: UseBollingerRadarOption
 
   // Calculate Bollinger Bands and signals
   const processData = useCallback((candleData: CandleData[]) => {
-    const bollingerData = calculateBollingerBands(candleData);
-    
+    const bollingerData = calculateBollingerBands(candleData, bbPeriod, bbMultiplier);
+
     const processedData: MarketData[] = candleData.map((candle, index) => ({
       ...candle,
       bollinger: bollingerData[index]
@@ -54,7 +61,7 @@ export function useBollingerRadar({ symbol, timeframe }: UseBollingerRadarOption
       setSignal(newSignal);
       setCurrentPrice(latestData.close);
     }
-  }, []);
+  }, [bbPeriod, bbMultiplier]);
 
   // Handle real-time ticker price updates
   const handleTickerUpdate = useCallback((price: number) => {
@@ -105,7 +112,7 @@ export function useBollingerRadar({ symbol, timeframe }: UseBollingerRadarOption
       }
 
       // Recalculate Bollinger Bands for all data
-      const bollingerData = calculateBollingerBands(candleDataArray);
+      const bollingerData = calculateBollingerBands(candleDataArray, bbPeriod, bbMultiplier);
       const processedData: MarketData[] = candleDataArray.map((candle, index) => ({
         ...candle,
         bollinger: bollingerData[index]
@@ -121,7 +128,7 @@ export function useBollingerRadar({ symbol, timeframe }: UseBollingerRadarOption
 
       return processedData;
     });
-  }, []);
+  }, [bbPeriod, bbMultiplier]);
 
   // Initialize data and WebSocket connections
   const initializeConnection = useCallback(async () => {
