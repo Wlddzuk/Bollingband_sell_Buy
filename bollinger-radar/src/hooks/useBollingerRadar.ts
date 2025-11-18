@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { CandleData, MarketData, SignalData, TimeframeValue } from '../types/crypto';
-import { fetchHistoricalData, createWebSocketConnection, getCurrentPrice } from '../services/binance';
+import { fetchHistoricalData, createWebSocketConnection, createTickerWebSocket, getCurrentPrice } from '../services/binance';
 import { calculateBollingerBands, calculateSignal } from '../utils/bollinger';
 
 interface UseBollingerRadarOptions {
@@ -15,6 +15,7 @@ interface UseBollingerRadarReturn {
   isLoading: boolean;
   error: string | null;
   connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'error';
+  lastUpdate: number;
 }
 
 export function useBollingerRadar({ symbol, timeframe }: UseBollingerRadarOptions): UseBollingerRadarReturn {
@@ -29,8 +30,10 @@ export function useBollingerRadar({ symbol, timeframe }: UseBollingerRadarOption
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('disconnected');
-  
+  const [lastUpdate, setLastUpdate] = useState<number>(Date.now());
+
   const wsRef = useRef<WebSocket | null>(null);
+  const tickerWsRef = useRef<WebSocket | null>(null);
   const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Calculate Bollinger Bands and signals
@@ -53,8 +56,29 @@ export function useBollingerRadar({ symbol, timeframe }: UseBollingerRadarOption
     }
   }, []);
 
-  // Handle new WebSocket data
-  const handleNewCandle = useCallback((newCandle: CandleData) => {
+  // Handle real-time ticker price updates
+  const handleTickerUpdate = useCallback((price: number) => {
+    setCurrentPrice(price);
+    setLastUpdate(Date.now());
+
+    // Recalculate signal with new price but existing Bollinger Bands
+    setMarketData(prevData => {
+      if (prevData.length === 0) return prevData;
+
+      const latestData = prevData[prevData.length - 1];
+      if (latestData && !isNaN(latestData.bollinger.upper)) {
+        const newSignal = calculateSignal(price, latestData.bollinger);
+        setSignal(newSignal);
+      }
+
+      return prevData;
+    });
+  }, []);
+
+  // Handle new WebSocket data (both real-time and closed candles)
+  const handleNewCandle = useCallback((newCandle: CandleData, isClosed: boolean) => {
+    setLastUpdate(Date.now());
+
     setMarketData(prevData => {
       // Convert to CandleData array for processing
       const candleDataArray = prevData.map(item => ({
@@ -65,12 +89,14 @@ export function useBollingerRadar({ symbol, timeframe }: UseBollingerRadarOption
         close: item.close,
         volume: item.volume
       }));
-      
+
       const lastIndex = candleDataArray.length - 1;
-      
+
       if (candleDataArray[lastIndex]?.timestamp === newCandle.timestamp) {
+        // Update existing candle (intra-candle update)
         candleDataArray[lastIndex] = newCandle;
-      } else {
+      } else if (isClosed) {
+        // Add new closed candle
         candleDataArray.push(newCandle);
         // Keep only last 300 candles
         if (candleDataArray.length > 300) {
@@ -97,17 +123,21 @@ export function useBollingerRadar({ symbol, timeframe }: UseBollingerRadarOption
     });
   }, []);
 
-  // Initialize data and WebSocket connection
+  // Initialize data and WebSocket connections
   const initializeConnection = useCallback(async () => {
     try {
       setIsLoading(true);
       setError(null);
       setConnectionStatus('connecting');
 
-      // Close existing WebSocket if any
+      // Close existing WebSockets if any
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
+      }
+      if (tickerWsRef.current) {
+        tickerWsRef.current.close();
+        tickerWsRef.current = null;
       }
 
       // Clear any existing retry timeout
@@ -123,8 +153,9 @@ export function useBollingerRadar({ symbol, timeframe }: UseBollingerRadarOption
       // Get current price
       const price = await getCurrentPrice(symbol);
       setCurrentPrice(price);
+      setLastUpdate(Date.now());
 
-      // Create WebSocket connection
+      // Create kline WebSocket connection (for candle updates)
       const ws = createWebSocketConnection(
         symbol,
         timeframe,
@@ -147,19 +178,31 @@ export function useBollingerRadar({ symbol, timeframe }: UseBollingerRadarOption
       };
 
       wsRef.current = ws;
+
+      // Create ticker WebSocket connection (for real-time price updates)
+      const tickerWs = createTickerWebSocket(
+        symbol,
+        handleTickerUpdate,
+        (error) => {
+          console.error('Ticker WebSocket error:', error);
+          // Don't retry ticker separately, main retry will handle both
+        }
+      );
+
+      tickerWsRef.current = tickerWs;
       setIsLoading(false);
 
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
       setConnectionStatus('error');
       setIsLoading(false);
-      
+
       // Retry connection after 5 seconds on error
       retryTimeoutRef.current = setTimeout(() => {
         initializeConnection();
       }, 5000);
     }
-  }, [symbol, timeframe, processData, handleNewCandle]);
+  }, [symbol, timeframe, processData, handleNewCandle, handleTickerUpdate]);
 
   // Initialize connection when symbol or timeframe changes
   useEffect(() => {
@@ -170,6 +213,10 @@ export function useBollingerRadar({ symbol, timeframe }: UseBollingerRadarOption
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
+      }
+      if (tickerWsRef.current) {
+        tickerWsRef.current.close();
+        tickerWsRef.current = null;
       }
       if (retryTimeoutRef.current) {
         clearTimeout(retryTimeoutRef.current);
@@ -184,6 +231,7 @@ export function useBollingerRadar({ symbol, timeframe }: UseBollingerRadarOption
     signal,
     isLoading,
     error,
-    connectionStatus
+    connectionStatus,
+    lastUpdate
   };
 }

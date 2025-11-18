@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -13,6 +13,7 @@ import { PriceChart } from './components/PriceChart';
 export default function App() {
   const [symbol, setSymbol] = useState('LINKUSDT');
   const [timeframe, setTimeframe] = useState<TimeframeValue>('4h');
+  const [, forceUpdate] = useState({});
   
   const {
     marketData,
@@ -20,8 +21,28 @@ export default function App() {
     signal,
     isLoading,
     error,
-    connectionStatus
+    connectionStatus,
+    lastUpdate
   } = useBollingerRadar({ symbol, timeframe });
+
+  // Force re-render every second to update the time display
+  useEffect(() => {
+    const interval = setInterval(() => {
+      forceUpdate({});
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const getTimeSinceUpdate = () => {
+    const seconds = Math.floor((Date.now() - lastUpdate) / 1000);
+    if (seconds < 1) return 'just now';
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ago`;
+  };
 
   const getConnectionStatusBadge = () => {
     switch (connectionStatus) {
@@ -73,6 +94,11 @@ export default function App() {
             
             <div className="flex items-center gap-3">
               {getConnectionStatusBadge()}
+              {connectionStatus === 'connected' && (
+                <span className="text-xs text-muted-foreground">
+                  Updated {getTimeSinceUpdate()}
+                </span>
+              )}
             </div>
           </div>
         </div>
